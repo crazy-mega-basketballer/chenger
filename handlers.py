@@ -316,46 +316,20 @@ async def get_next_video(event, admin_id: int):
         )
         return
 
-    # Отправляем видео пользователю (без подписи)
+    # Отправляем видео пользователю (без подписи, без пересылки)
     try:
         current_bot = get_runtime_bot()
         if current_bot is None:
             raise RuntimeError("Bot instance is not initialized")
 
-        # Получаем информацию о сообщении из админ-чата
-        try:
-            admin_message = await current_bot.forward_message(
-                chat_id=user_id,
-                from_chat_id=next_video['chat_id'],
-                message_id=next_video['message_id']
-            )
-
-            # Если это обычное видео с подписью, удаляем пересланное и отправляем без подписи
-            if admin_message.video:
-                await current_bot.delete_message(chat_id=user_id, message_id=admin_message.message_id)
-                await current_bot.send_video(
-                    chat_id=user_id,
-                    video=admin_message.video.file_id
-                )
-            elif admin_message.video_note:
-                # Видеозаметки и так без подписи, оставляем как есть
-                pass
-            else:
-                # Если это не видео и не видеозаметка, удаляем и копируем оригинал
-                await current_bot.delete_message(chat_id=user_id, message_id=admin_message.message_id)
-                await current_bot.copy_message(
-                    chat_id=user_id,
-                    from_chat_id=next_video['chat_id'],
-                    message_id=next_video['message_id']
-                )
-        except Exception as forward_error:
-            # Если forward не сработал, пробуем copy_message
-            logger.warning(f"Forward не удался для видео #{next_video['id']}, пробуем copy_message: {forward_error}")
-            await current_bot.copy_message(
-                chat_id=user_id,
-                from_chat_id=next_video['chat_id'],
-                message_id=next_video['message_id']
-            )
+        # Получаем информацию о видео из базы
+        # Используем copy_message с параметром protect_content для запрета пересылки и сохранения
+        await current_bot.copy_message(
+            chat_id=user_id,
+            from_chat_id=next_video['chat_id'],
+            message_id=next_video['message_id'],
+            protect_content=True  # Запрет пересылки и сохранения
+        )
 
         # Обновляем прогресс
         progress['last_video_id'] = next_video['id']
