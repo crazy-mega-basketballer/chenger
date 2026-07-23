@@ -577,6 +577,65 @@ async def cmd_delvideo(message: Message, admin_id: int):
         )
 
 
+@admin_router.message(F.reply_to_message)
+async def delete_video_by_reply(message: Message, admin_id: int):
+    """Удаляет видео при ответе администратора на сообщение с видео"""
+    if not is_admin(message.from_user.id, admin_id):
+        return
+
+    # Проверяем, что это ответ на сообщение с видео
+    replied_message = message.reply_to_message
+    if not replied_message:
+        return
+
+    # Ищем видео по message_id и chat_id
+    videos = storage.load_videos()
+    video_to_delete = None
+
+    for video in videos:
+        if video['message_id'] == replied_message.message_id and video['chat_id'] == replied_message.chat.id:
+            video_to_delete = video
+            break
+
+    if not video_to_delete:
+        await message.answer(
+            "❌ <b>Видео не найдено в базе</b>\n\n"
+            "Возможно, оно уже было удалено.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Удаляем видео из базы
+    video_id = video_to_delete['id']
+    success = storage.delete_video(video_id)
+
+    if success:
+        # Удаляем само сообщение с видео
+        try:
+            current_bot = get_runtime_bot()
+            if current_bot is None:
+                raise RuntimeError("Bot instance is not initialized")
+            await current_bot.delete_message(
+                chat_id=replied_message.chat.id,
+                message_id=replied_message.message_id
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось удалить сообщение с видео: {e}")
+
+        await message.answer(
+            f"✅ <b>Видео #{video_id} удалено</b>\n\n"
+            f"Оставшиеся видео перенумерованы.\n"
+            f"Прогресс пользователей скорректирован.",
+            parse_mode="HTML"
+        )
+        logger.info(f"Администратор удалил видео #{video_id} через ответ на сообщение")
+    else:
+        await message.answer(
+            f"❌ <b>Ошибка при удалении видео</b>",
+            parse_mode="HTML"
+        )
+
+
 # ==================== СБРОС ПРОГРЕССА ====================
 
 @admin_router.message(Command("reset"))

@@ -133,7 +133,8 @@ async def cmd_start(message: Message, bot_username: str, admin_id: int):
             f"📋 /list — список всех видео\n"
             f"🚫 /ban <code>user_id</code> — забанить пользователя\n"
             f"✅ /unban <code>user_id</code> — разбанить пользователя\n"
-            f"🗑 /delvideo <code>video_id</code> — удалить видео\n"
+            f"🗑 /delvideo <code>video_id</code> — удалить видео по ID\n"
+            f"🗑 <b>Удалить видео ответом</b> — сделайте ответ на видео с любым текстом\n"
             f"🔄 /reset <code>user_id</code> — сбросить прогресс пользователя\n"
             f"🔄 /reset_all — сбросить прогресс всех пользователей\n"
             f"🧹 /clear — очистить весь архив\n"
@@ -141,7 +142,9 @@ async def cmd_start(message: Message, bot_username: str, admin_id: int):
             f"📹 <b>Загрузка видео:</b>\n"
             f"Просто отправьте видео боту — оно автоматически добавится в архив.\n\n"
             f"📤 <b>Модерация:</b>\n"
-            f"Когда пользователи отправляют видео, вы получите уведомление с кнопками одобрения/отклонения.",
+            f"Когда пользователи отправляют видео, они сразу добавляются в архив.\n"
+            f"Видео приходит с подписью (от кого и номер видео).\n"
+            f"Чтобы удалить видео — сделайте ответ на него с любым текстом.",
             parse_mode="HTML"
         )
         return
@@ -579,43 +582,56 @@ async def _process_user_media_batch(messages: list[Message], admin_id: int):
             storage.save_duplicate_hash(duplicate_hash)
             known_hashes.add(duplicate_hash)
 
-            # Пересылаем видео администратору
-            forwarded = await current_bot.copy_message(
-                chat_id=admin_id,
-                from_chat_id=message.chat.id,
-                message_id=message.message_id
-            )
-
-            # Добавляем видео в базу
-            video_id = storage.add_video(
-                message_id=forwarded.message_id,
-                chat_id=admin_id,
+            # Добавляем видео в базу (получаем video_id для подписи)
+            # Временно используем message_id из оригинального сообщения, потом обновим
+            temp_video_id = storage.add_video(
+                message_id=message.message_id,
+                chat_id=message.chat.id,
                 original_user_id=user_id
             )
-            video_ids.append(video_id)
+
+            # Пересылаем видео администратору с подписью
+            caption_text = (
+                f"📹 Новое видео от {user_mention}\n"
+                f"🆔 User ID: {user_id}\n"
+                f"📹 Видео #{temp_video_id}"
+            )
+
+            # Определяем тип медиа и отправляем с подписью
+            if message.video:
+                forwarded = await current_bot.send_video(
+                    chat_id=admin_id,
+                    video=message.video.file_id,
+                    caption=caption_text,
+                    parse_mode="HTML"
+                )
+            else:  # video_note
+                # Видеозаметки не поддерживают caption, поэтому копируем и отправляем текст отдельно
+                forwarded = await current_bot.copy_message(
+                    chat_id=admin_id,
+                    from_chat_id=message.chat.id,
+                    message_id=message.message_id
+                )
+                await current_bot.send_message(
+                    admin_id,
+                    caption_text,
+                    parse_mode="HTML"
+                )
+
+            # Обновляем запись в базе с правильным message_id и chat_id админа
+            videos = storage.load_videos()
+            for v in videos:
+                if v['id'] == temp_video_id:
+                    v['message_id'] = forwarded.message_id
+                    v['chat_id'] = admin_id
+                    break
+            storage.save_videos(videos)
+
+            video_ids.append(temp_video_id)
 
             progress = storage.load_user_progress(user_id)
             progress['limit'] += 1
             storage.save_user_progress(progress)
-
-            # КРИТИЧЕСКИ ВАЖНО: отправляем кнопки модерации СРАЗУ после копирования видео
-            # Это гарантирует порядок: видео #N → кнопки к видео #N
-            builder = InlineKeyboardBuilder()
-            builder.button(text="✅ Подтвердить", callback_data=build_moderation_callback_data("approve", user_id, video_id))
-            builder.button(text="❌ Отклонить", callback_data=build_moderation_callback_data("reject", user_id, video_id))
-            builder.adjust(2)
-
-            # Используем await для гарантии последовательной отправки
-            await current_bot.send_message(
-                admin_id,
-                f"📹 <b>Новая проверка видео</b>\n\n"
-                f"👤 {user_mention}\n"
-                f"🆔 User ID: <code>{user_id}</code>\n"
-                f"📹 Видео #{video_id}\n\n"
-                f"Выберите действие:",
-                parse_mode="HTML",
-                reply_markup=builder.as_markup()
-            )
 
             # Задержка для гарантии строгого порядка доставки сообщений в Telegram
             await asyncio.sleep(0.3)
