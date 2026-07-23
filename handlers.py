@@ -316,16 +316,46 @@ async def get_next_video(event, admin_id: int):
         )
         return
 
-    # Отправляем видео пользователю (копируем из админ-чата)
+    # Отправляем видео пользователю (без подписи)
     try:
         current_bot = get_runtime_bot()
         if current_bot is None:
             raise RuntimeError("Bot instance is not initialized")
-        await current_bot.copy_message(
-            chat_id=user_id,
-            from_chat_id=next_video['chat_id'],
-            message_id=next_video['message_id']
-        )
+
+        # Получаем информацию о сообщении из админ-чата
+        try:
+            admin_message = await current_bot.forward_message(
+                chat_id=user_id,
+                from_chat_id=next_video['chat_id'],
+                message_id=next_video['message_id']
+            )
+
+            # Если это обычное видео с подписью, удаляем пересланное и отправляем без подписи
+            if admin_message.video:
+                await current_bot.delete_message(chat_id=user_id, message_id=admin_message.message_id)
+                await current_bot.send_video(
+                    chat_id=user_id,
+                    video=admin_message.video.file_id
+                )
+            elif admin_message.video_note:
+                # Видеозаметки и так без подписи, оставляем как есть
+                pass
+            else:
+                # Если это не видео и не видеозаметка, удаляем и копируем оригинал
+                await current_bot.delete_message(chat_id=user_id, message_id=admin_message.message_id)
+                await current_bot.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=next_video['chat_id'],
+                    message_id=next_video['message_id']
+                )
+        except Exception as forward_error:
+            # Если forward не сработал, пробуем copy_message
+            logger.warning(f"Forward не удался для видео #{next_video['id']}, пробуем copy_message: {forward_error}")
+            await current_bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=next_video['chat_id'],
+                message_id=next_video['message_id']
+            )
 
         # Обновляем прогресс
         progress['last_video_id'] = next_video['id']
@@ -695,15 +725,6 @@ async def handle_user_video(message: Message, admin_id: int):
 
     if user_id == admin_id:
         logger.info("Видео администратора обрабатывается отдельным админским обработчиком")
-        return
-
-    duration = get_media_duration_seconds(message)
-    if duration is not None and duration < 10:
-        await message.answer(
-            f"❌ <b>Видео слишком короткое</b>\n\n"
-            f"Минимальная длительность — <b>10 секунд</b>.",
-            parse_mode="HTML"
-        )
         return
 
     media_group_id = getattr(message, "media_group_id", None)
