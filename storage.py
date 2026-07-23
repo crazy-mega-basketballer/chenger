@@ -126,6 +126,18 @@ def get_video_by_id(video_id: int) -> Optional[Dict]:
     return None
 
 
+def save_videos(videos: List[Dict]):
+    """
+    Сохраняет список видео в файл.
+    Формат: id|message_id|chat_id|original_user_id|timestamp
+    """
+    with open(VIDEOS_FILE, 'w', encoding='utf-8') as f:
+        for video in videos:
+            f.write(f"{video['id']}|{video['message_id']}|{video['chat_id']}|"
+                   f"{video['original_user_id']}|{video['timestamp']}\n")
+    logger.info(f"Сохранено {len(videos)} видео в базу")
+
+
 def delete_video(video_id: int) -> bool:
     """
     Удаляет видео по ID и перенумеровывает оставшиеся.
