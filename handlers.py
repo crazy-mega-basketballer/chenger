@@ -598,12 +598,14 @@ async def _process_user_media_batch(messages: list[Message], admin_id: int):
             progress['limit'] += 1
             storage.save_user_progress(progress)
 
-            # Отправляем кнопки модерации СРАЗУ после копирования видео
+            # КРИТИЧЕСКИ ВАЖНО: отправляем кнопки модерации СРАЗУ после копирования видео
+            # Это гарантирует порядок: видео #N → кнопки к видео #N
             builder = InlineKeyboardBuilder()
             builder.button(text="✅ Подтвердить", callback_data=build_moderation_callback_data("approve", user_id, video_id))
             builder.button(text="❌ Отклонить", callback_data=build_moderation_callback_data("reject", user_id, video_id))
             builder.adjust(2)
 
+            # Используем await для гарантии последовательной отправки
             await current_bot.send_message(
                 admin_id,
                 f"📹 <b>Новая проверка видео</b>\n\n"
@@ -614,6 +616,9 @@ async def _process_user_media_batch(messages: list[Message], admin_id: int):
                 parse_mode="HTML",
                 reply_markup=builder.as_markup()
             )
+
+            # Задержка для гарантии строгого порядка доставки сообщений в Telegram
+            await asyncio.sleep(0.3)
 
         if not video_ids:
             if duplicate_count > 0 and rejected_short_count == 0:
