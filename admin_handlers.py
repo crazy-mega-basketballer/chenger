@@ -607,6 +607,7 @@ async def delete_video_by_reply(message: Message, admin_id: int):
 
     # Удаляем видео из базы
     video_id = video_to_delete['id']
+    original_user_id = video_to_delete['original_user_id']
     success = storage.delete_video(video_id)
 
     if success:
@@ -621,6 +622,22 @@ async def delete_video_by_reply(message: Message, admin_id: int):
             )
         except Exception as e:
             logger.warning(f"Не удалось удалить сообщение с видео: {e}")
+
+        # Уведомляем пользователя об отклонении видео
+        try:
+            current_bot = get_runtime_bot()
+            if current_bot is None:
+                raise RuntimeError("Bot instance is not initialized")
+            await current_bot.send_message(
+                original_user_id,
+                f"❌ <b>Ваше видео отклонено</b>\n\n"
+                f"Видео #{video_id} не прошло модерацию и было удалено из архива.\n\n"
+                f"Пожалуйста, отправляйте только качественные и уместные видео.",
+                parse_mode="HTML"
+            )
+            logger.info(f"Пользователь {original_user_id} уведомлен об удалении видео #{video_id}")
+        except Exception as e:
+            logger.error(f"Не удалось уведомить пользователя {original_user_id}: {e}")
 
         await message.answer(
             f"✅ <b>Видео #{video_id} удалено</b>\n\n"
