@@ -538,65 +538,71 @@ async def _process_user_media_batch(messages: list[Message], admin_id: int):
     username = first_message.from_user.username
     user_mention = f"@{username}" if username else f"ID: {user_id}"
 
-    try:
-        current_bot = get_runtime_bot()
-        if current_bot is None:
-            raise RuntimeError("Bot instance is not initialized")
+    current_bot = get_runtime_bot()
+    if current_bot is None:
+        logger.error("Bot instance is not initialized")
+        await first_message.answer(
+            f"❌ <b>Ошибка при обработке видео</b>\n\n"
+            f"Попробуйте позже.",
+            parse_mode="HTML"
+        )
+        return
 
-        video_ids = []
-        rejected_short_count = 0
-        duplicate_count = 0
-        known_hashes = storage.load_duplicate_hashes()
+    video_ids = []
+    rejected_short_count = 0
+    duplicate_count = 0
+    known_hashes = storage.load_duplicate_hashes()
 
-        for message in messages:
-            duration = get_media_duration_seconds(message)
-            if duration is not None and duration < 10:
-                rejected_short_count += 1
-                continue
+    for message in messages:
+        duration = get_media_duration_seconds(message)
+        if duration is not None and duration < 10:
+            rejected_short_count += 1
+            continue
 
-            # Получаем file_id (уникальный идентификатор файла в Telegram)
-            file_id = None
-            media = getattr(message, 'video', None)
+        # Получаем file_id (уникальный идентификатор файла в Telegram)
+        file_id = None
+        media = getattr(message, 'video', None)
+        if media is not None:
+            file_id = getattr(media, 'file_id', None)
+
+        if file_id is None:
+            media = getattr(message, 'video_note', None)
             if media is not None:
                 file_id = getattr(media, 'file_id', None)
 
-            if file_id is None:
-                media = getattr(message, 'video_note', None)
-                if media is not None:
-                    file_id = getattr(media, 'file_id', None)
+        # Если file_id не найден - пропускаем видео
+        if not file_id:
+            logger.warning(f"Не удалось получить file_id для видео от {user_id}")
+            duplicate_count += 1
+            continue
 
-            # Если file_id не найден - пропускаем видео
-            if not file_id:
-                logger.warning(f"Не удалось получить file_id для видео от {user_id}")
-                duplicate_count += 1
-                continue
+        # Проверяем на дубликат ДО копирования (используем file_id)
+        duplicate_hash = storage.compute_file_hash(file_id.encode('utf-8'))
+        if storage.is_duplicate_video_hash(duplicate_hash, known_hashes):
+            duplicate_count += 1
+            logger.info(f"Отклонен дубликат видео от {user_id}, хеш: {duplicate_hash[:16]}...")
+            continue
 
-            # Проверяем на дубликат ДО копирования (используем file_id)
-            duplicate_hash = storage.compute_file_hash(file_id.encode('utf-8'))
-            if storage.is_duplicate_video_hash(duplicate_hash, known_hashes):
-                duplicate_count += 1
-                logger.info(f"Отклонен дубликат видео от {user_id}, хеш: {duplicate_hash[:16]}...")
-                continue
+        # Сохраняем хеш ПЕРЕД добавлением видео
+        storage.save_duplicate_hash(duplicate_hash)
+        known_hashes.add(duplicate_hash)
 
-            # Сохраняем хеш ПЕРЕД добавлением видео
-            storage.save_duplicate_hash(duplicate_hash)
-            known_hashes.add(duplicate_hash)
+        # Добавляем видео в базу (получаем video_id для подписи)
+        # Временно используем message_id из оригинального сообщения, потом обновим
+        temp_video_id = storage.add_video(
+            message_id=message.message_id,
+            chat_id=message.chat.id,
+            original_user_id=user_id
+        )
 
-            # Добавляем видео в базу (получаем video_id для подписи)
-            # Временно используем message_id из оригинального сообщения, потом обновим
-            temp_video_id = storage.add_video(
-                message_id=message.message_id,
-                chat_id=message.chat.id,
-                original_user_id=user_id
-            )
+        # Пересылаем видео администратору с подписью
+        caption_text = (
+            f"📹 Новое видео от {user_mention}\n"
+            f"🆔 User ID: {user_id}\n"
+            f"📹 Видео #{temp_video_id}"
+        )
 
-            # Пересылаем видео администратору с подписью
-            caption_text = (
-                f"📹 Новое видео от {user_mention}\n"
-                f"🆔 User ID: {user_id}\n"
-                f"📹 Видео #{temp_video_id}"
-            )
-
+        try:
             # Определяем тип медиа и отправляем с подписью
             if message.video:
                 forwarded = await current_bot.send_video(
@@ -635,45 +641,43 @@ async def _process_user_media_batch(messages: list[Message], admin_id: int):
 
             # Задержка для гарантии строгого порядка доставки сообщений в Telegram
             await asyncio.sleep(0.3)
+        except Exception as e:
+            logger.error(f"Ошибка при пересылке видео #{temp_video_id} от {user_id}: {e}")
+            # Если не удалось переслать видео - удаляем его из базы
+            storage.delete_video(temp_video_id)
+            continue
 
-        if not video_ids:
-            if duplicate_count > 0 and rejected_short_count == 0:
-                await first_message.answer(
-                    f"❌ <b>Видео отклонено</b>\n\n"
-                    f"Такое видео уже есть в базе.",
-                    parse_mode="HTML",
-                    reply_markup=get_main_keyboard()
-                )
-            else:
-                await first_message.answer(
-                    f"❌ <b>Видео отклонено</b>\n\n"
-                    f"Минимальная длительность — <b>10 секунд</b>.",
-                    parse_mode="HTML",
-                    reply_markup=get_main_keyboard()
-                )
-            return
+    if not video_ids:
+        if duplicate_count > 0 and rejected_short_count == 0:
+            await first_message.answer(
+                f"❌ <b>Видео отклонено</b>\n\n"
+                f"Такое видео уже есть в базе.",
+                parse_mode="HTML",
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await first_message.answer(
+                f"❌ <b>Видео отклонено</b>\n\n"
+                f"Минимальная длительность — <b>10 секунд</b>.",
+                parse_mode="HTML",
+                reply_markup=get_main_keyboard()
+            )
+        return
 
-        reply_text = f"✅ <b>Видео добавлены в архив</b>\n\n📦 Получено: <b>{len(video_ids)}</b> видео"
-        if rejected_short_count:
-            reply_text += f"\n⚠️ Отклонено коротких видео: <b>{rejected_short_count}</b>"
-        if duplicate_count:
-            reply_text += f"\n🔁 Отклонено дублей: <b>{duplicate_count}</b>"
-        reply_text += f"\n📌 Осталось видео: <b>{get_remaining_videos(storage.load_user_progress(user_id))}</b>"
+    reply_text = f"✅ <b>Видео добавлены в архив</b>\n\n📦 Получено: <b>{len(video_ids)}</b> видео"
+    if rejected_short_count:
+        reply_text += f"\n⚠️ Отклонено коротких видео: <b>{rejected_short_count}</b>"
+    if duplicate_count:
+        reply_text += f"\n🔁 Отклонено дублей: <b>{duplicate_count}</b>"
+    reply_text += f"\n📌 Осталось видео: <b>{get_remaining_videos(storage.load_user_progress(user_id))}</b>"
 
-        await first_message.answer(
-            reply_text,
-            parse_mode="HTML",
-            reply_markup=get_main_keyboard()
-        )
+    await first_message.answer(
+        reply_text,
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard()
+    )
 
-        logger.info(f"Пользователь {user_id} отправил {len(video_ids)} видео в архив")
-    except Exception as e:
-        logger.error(f"Ошибка при обработке видео от {user_id}: {e}")
-        await first_message.answer(
-            f"❌ <b>Ошибка при обработке видео</b>\n\n"
-            f"Попробуйте позже.",
-            parse_mode="HTML"
-        )
+    logger.info(f"Пользователь {user_id} отправил {len(video_ids)} видео в архив")
 
 
 async def _flush_media_batch(media_group_id: str, admin_id: int):
