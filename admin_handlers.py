@@ -159,7 +159,7 @@ async def reject_batch_video(callback: CallbackQuery, admin_id: int):
         await current_bot.send_message(
             user_id,
             f"❌ <b>Видео не прошло модерацию</b>\n\n"
-            f"Будьте аккуратнее.",
+            f"Пожалуйста, отправляйте только качественные и уместные видео.",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -631,7 +631,7 @@ async def delete_video_by_reply(message: Message, admin_id: int):
             await current_bot.send_message(
                 original_user_id,
                 f"❌ <b>Ваше видео отклонено</b>\n\n"
-                f"Видео #{video_id} не прошло модерацию и было удалено из архива.\n\n"
+                f"Видео не прошло модерацию и было удалено из архива.\n\n"
                 f"Пожалуйста, отправляйте только качественные и уместные видео.",
                 parse_mode="HTML"
             )
@@ -855,3 +855,157 @@ async def cmd_setlimit(message: Message, admin_id: int):
         logger.error(f"Не удалось уведомить пользователя {user_id} об изменении лимита: {e}")
 
     logger.info(f"Администратор изменил лимит пользователя {user_id} на {new_limit}")
+
+
+# ==================== РАССЫЛКА СООБЩЕНИЙ ====================
+
+@admin_router.message(Command("broadcast"))
+async def cmd_broadcast(message: Message, admin_id: int):
+    """Отправляет сообщение всем пользователям"""
+    if not is_admin(message.from_user.id, admin_id):
+        return
+
+    # Проверяем, есть ли текст после команды
+    text_parts = message.text.split(maxsplit=1)
+    if len(text_parts) < 2:
+        await message.answer(
+            "❌ <b>Использование:</b> /broadcast <code>текст сообщения</code>\n\n"
+            "Пример: /broadcast Привет всем! Сегодня добавлено 50 новых видео.",
+            parse_mode="HTML"
+        )
+        return
+
+    broadcast_text = text_parts[1]
+
+    # Получаем всех пользователей
+    users = storage.get_all_users()
+
+    if not users:
+        await message.answer("📭 <b>Нет пользователей для рассылки</b>", parse_mode="HTML")
+        return
+
+    # Отправляем сообщение
+    success_count = 0
+    fail_count = 0
+
+    status_message = await message.answer(
+        f"📤 <b>Начинаю рассылку...</b>\n\n"
+        f"Всего пользователей: <b>{len(users)}</b>",
+        parse_mode="HTML"
+    )
+
+    try:
+        current_bot = get_runtime_bot()
+        if current_bot is None:
+            raise RuntimeError("Bot instance is not initialized")
+
+        for user in users:
+            try:
+                await current_bot.send_message(
+                    user['user_id'],
+                    f"📢 <b>Сообщение от администратора:</b>\n\n{broadcast_text}",
+                    parse_mode="HTML"
+                )
+                success_count += 1
+                # Небольшая задержка, чтобы не превысить лимиты Telegram
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                fail_count += 1
+                logger.warning(f"Не удалось отправить сообщение пользователю {user['user_id']}: {e}")
+
+        await status_message.edit_text(
+            f"✅ <b>Рассылка завершена</b>\n\n"
+            f"📤 Отправлено: <b>{success_count}</b>\n"
+            f"❌ Не доставлено: <b>{fail_count}</b>",
+            parse_mode="HTML"
+        )
+
+        logger.info(f"Администратор выполнил рассылку: {success_count} успешно, {fail_count} ошибок")
+
+    except Exception as e:
+        await status_message.edit_text(
+            f"❌ <b>Ошибка при рассылке</b>\n\n{str(e)}",
+            parse_mode="HTML"
+        )
+        logger.error(f"Ошибка при рассылке: {e}")
+
+
+# ==================== СТАТИСТИКА ПОЛЬЗОВАТЕЛЯ ====================
+
+@admin_router.message(Command("user"))
+async def cmd_user_stats(message: Message, admin_id: int):
+    """Показывает статистику конкретного пользователя"""
+    if not is_admin(message.from_user.id, admin_id):
+        return
+
+    # Парсим user_id из команды
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "❌ <b>Использование:</b> /user <code>user_id</code>\n\n"
+            "Пример: /user 123456789",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        target_user_id = int(args[1])
+    except ValueError:
+        await message.answer("❌ <b>Ошибка:</b> некорректный ID пользователя", parse_mode="HTML")
+        return
+
+    # Загружаем данные пользователя
+    progress = storage.load_user_progress(target_user_id, create_if_missing=False)
+
+    if progress is None:
+        await message.answer(
+            f"❌ <b>Пользователь не найден</b>\n\n"
+            f"User ID: <code>{target_user_id}</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    # Проверяем бан
+    ban_timestamp = storage.check_ban(target_user_id)
+    ban_status = "❌ Забанен"
+    if ban_timestamp:
+        unban_date = datetime.fromtimestamp(ban_timestamp).strftime("%d.%m.%Y %H:%M")
+        ban_status = f"🚫 Забанен до {unban_date}"
+    else:
+        ban_status = "✅ Активен"
+
+    # Проверяем доступность ежедневного бонуса
+    today = datetime.now().strftime("%Y-%m-%d")
+    bonus_available = progress['daily_bonus_date'] != today
+    bonus_status = "✅ Доступен" if bonus_available else f"❌ Получен ({progress['daily_bonus_date']})"
+
+    # Подсчитываем доступные видео
+    available_videos = max(0, progress['limit'] - progress['last_video_id'])
+
+    # Получаем информацию о загруженных видео
+    all_videos = storage.load_videos()
+    uploaded_videos = [v for v in all_videos if v['original_user_id'] == target_user_id]
+
+    # Информация о реферере
+    referrer_info = "Нет"
+    if progress['referrer_id'] != 0:
+        referrer_info = f"User ID: <code>{progress['referrer_id']}</code>"
+
+    user_stats_text = (
+        f"👤 <b>Статистика пользователя</b>\n\n"
+        f"🆔 <b>User ID:</b> <code>{target_user_id}</code>\n"
+        f"📊 <b>Статус:</b> {ban_status}\n\n"
+        f"<b>Просмотр видео:</b>\n"
+        f"▪️ Просмотрено: <b>{progress['last_video_id']}</b> видео\n"
+        f"▪️ Лимит: <b>{progress['limit']}</b>\n"
+        f"▪️ Осталось: <b>{available_videos}</b> видео\n\n"
+        f"<b>Активность:</b>\n"
+        f"▪️ Загружено видео: <b>{len(uploaded_videos)}</b>\n"
+        f"▪️ Приглашено друзей: <b>{progress['referrals_count']}</b>\n"
+        f"▪️ Приглашён пользователем: {referrer_info}\n\n"
+        f"<b>Бонусы:</b>\n"
+        f"▪️ Ежедневный бонус: {bonus_status}"
+    )
+
+    await message.answer(user_stats_text, parse_mode="HTML")
+    logger.info(f"Администратор запросил статистику пользователя {target_user_id}")
