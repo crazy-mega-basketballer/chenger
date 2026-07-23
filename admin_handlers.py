@@ -9,6 +9,7 @@ from aiogram import Router, F
 from aiogram.filters import BaseFilter, Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from collections import defaultdict
 
 import storage
 
@@ -391,6 +392,7 @@ async def cmd_ban(message: Message, admin_id: int):
 
     # Показываем кнопки выбора длительности бана
     builder = InlineKeyboardBuilder()
+    builder.button(text="10 минут", callback_data=f"ban_{user_id_to_ban}_10m")
     builder.button(text="1 час", callback_data=f"ban_{user_id_to_ban}_1h")
     builder.button(text="5 часов", callback_data=f"ban_{user_id_to_ban}_5h")
     builder.button(text="10 часов", callback_data=f"ban_{user_id_to_ban}_10h")
@@ -420,6 +422,7 @@ async def process_ban(callback: CallbackQuery, admin_id: int):
 
     # Определяем длительность
     duration_map = {
+        "10m": timedelta(minutes=10),
         "1h": timedelta(hours=1),
         "5h": timedelta(hours=5),
         "10h": timedelta(hours=10),
@@ -429,6 +432,7 @@ async def process_ban(callback: CallbackQuery, admin_id: int):
     }
 
     duration_text_map = {
+        "10m": "10 минут",
         "1h": "1 час",
         "5h": "5 часов",
         "10h": "10 часов",
@@ -631,7 +635,7 @@ async def delete_video_by_reply(message: Message, admin_id: int):
             await current_bot.send_message(
                 original_user_id,
                 f"❌ <b>Ваше видео отклонено</b>\n\n"
-                f"Видео не прошло модерацию и было удалено из архива.\n\n"
+                f"Видео не прошло модерацию.\n\n"
                 f"Пожалуйста, отправляйте только качественные и уместные видео.",
                 parse_mode="HTML"
             )
@@ -1009,3 +1013,239 @@ async def cmd_user_stats(message: Message, admin_id: int):
 
     await message.answer(user_stats_text, parse_mode="HTML")
     logger.info(f"Администратор запросил статистику пользователя {target_user_id}")
+
+
+# ==================== ТОП ПОЛЬЗОВАТЕЛЕЙ ====================
+
+@admin_router.message(Command("top"))
+async def cmd_top(message: Message, admin_id: int):
+    """Показывает топ-10 самых активных пользователей"""
+    if not is_admin(message.from_user.id, admin_id):
+        return
+
+    # Получаем всех пользователей
+    users = storage.get_all_users()
+
+    if not users:
+        await message.answer("📭 <b>Нет пользователей для статистики</b>", parse_mode="HTML")
+        return
+
+    # Получаем все видео
+    all_videos = storage.load_videos()
+
+    # Подсчитываем загруженные видео для каждого пользователя
+    uploaded_videos = defaultdict(int)
+    for video in all_videos:
+        uploaded_videos[video['original_user_id']] += 1
+
+    # Топ по просмотренным видео
+    top_watched = sorted(users, key=lambda u: u['last_video_id'], reverse=True)[:10]
+    watched_text = "<b>📺 Топ-10 по просмотренным видео:</b>\n\n"
+    for i, user in enumerate(top_watched, 1):
+        watched_text += f"{i}. User ID <code>{user['user_id']}</code> — <b>{user['last_video_id']}</b> видео\n"
+
+    # Топ по загруженным видео
+    top_uploaded = sorted(users, key=lambda u: uploaded_videos[u['user_id']], reverse=True)[:10]
+    uploaded_text = "\n\n<b>📹 Топ-10 по отправленным видео:</b>\n\n"
+    for i, user in enumerate(top_uploaded, 1):
+        count = uploaded_videos[user['user_id']]
+        uploaded_text += f"{i}. User ID <code>{user['user_id']}</code> — <b>{count}</b> видео\n"
+
+    # Топ по рефералам
+    top_referrals = sorted(users, key=lambda u: u['referrals_count'], reverse=True)[:10]
+    referrals_text = "\n\n<b>👥 Топ-10 по приглашённым:</b>\n\n"
+    for i, user in enumerate(top_referrals, 1):
+        referrals_text += f"{i}. User ID <code>{user['user_id']}</code> — <b>{user['referrals_count']}</b> друзей\n"
+
+    # Объединяем всё
+    full_text = watched_text + uploaded_text + referrals_text
+
+    await message.answer(full_text, parse_mode="HTML")
+    logger.info("Администратор запросил топ пользователей")
+
+
+# ==================== МАССОВОЕ УДАЛЕНИЕ ВИДЕО ====================
+
+@admin_router.message(Command("delrange"))
+async def cmd_delrange(message: Message, admin_id: int):
+    """Удаляет видео в диапазоне от N до Y"""
+    if not is_admin(message.from_user.id, admin_id):
+        return
+
+    # Парсим аргументы
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "❌ <b>Использование:</b> /delrange <code>start-end</code>\n\n"
+            "Примеры:\n"
+            "/delrange 750-754 — удалить видео с 750 по 754 (5 видео)\n"
+            "/delrange 10-10 — удалить только видео 10",
+            parse_mode="HTML"
+        )
+        return
+
+    # Парсим диапазон
+    range_str = args[1]
+    if "-" not in range_str:
+        await message.answer("❌ <b>Ошибка:</b> используйте формат start-end (например, 750-754)", parse_mode="HTML")
+        return
+
+    try:
+        start_str, end_str = range_str.split("-", 1)
+        start_id = int(start_str)
+        end_id = int(end_str)
+    except ValueError:
+        await message.answer("❌ <b>Ошибка:</b> некорректный диапазон", parse_mode="HTML")
+        return
+
+    if start_id > end_id:
+        await message.answer("❌ <b>Ошибка:</b> начальный ID должен быть меньше или равен конечному", parse_mode="HTML")
+        return
+
+    if start_id < 1:
+        await message.answer("❌ <b>Ошибка:</b> ID видео должен быть больше 0", parse_mode="HTML")
+        return
+
+    # Получаем все видео
+    all_videos = storage.load_videos()
+
+    # Находим видео в диапазоне
+    videos_to_delete = [v for v in all_videos if start_id <= v['id'] <= end_id]
+
+    if not videos_to_delete:
+        await message.answer(
+            f"❌ <b>Видео не найдены</b>\n\n"
+            f"В диапазоне {start_id}-{end_id} нет видео.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Группируем видео по пользователям
+    users_videos = defaultdict(list)
+    for video in videos_to_delete:
+        users_videos[video['original_user_id']].append(video['id'])
+
+    # Запрашиваем подтверждение
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, удалить", callback_data=f"confirm_delrange_{start_id}_{end_id}")
+    builder.button(text="❌ Отмена", callback_data="cancel_delrange")
+    builder.adjust(1)
+
+    await message.answer(
+        f"⚠️ <b>ВНИМАНИЕ!</b>\n\n"
+        f"Вы уверены, что хотите удалить <b>{len(videos_to_delete)}</b> видео "
+        f"(ID {start_id}-{end_id})?\n\n"
+        f"Затронуто пользователей: <b>{len(users_videos)}</b>\n\n"
+        f"<b>Это действие необратимо!</b>",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+
+
+@admin_router.callback_query(F.data.startswith("confirm_delrange_"))
+async def confirm_delrange(callback: CallbackQuery, admin_id: int):
+    """Подтверждение массового удаления видео"""
+    if not is_admin(callback.from_user.id, admin_id):
+        await callback.answer("❌ Доступно только администратору", show_alert=True)
+        return
+
+    # Парсим данные
+    parts = callback.data.split("_")
+    start_id = int(parts[2])
+    end_id = int(parts[3])
+
+    # Получаем все видео
+    all_videos = storage.load_videos()
+
+    # Находим видео в диапазоне
+    videos_to_delete = [v for v in all_videos if start_id <= v['id'] <= end_id]
+
+    if not videos_to_delete:
+        await callback.message.edit_text(
+            "❌ <b>Видео не найдены</b>",
+            parse_mode="HTML"
+        )
+        await callback.answer("Видео не найдены")
+        return
+
+    # Группируем видео по пользователям
+    users_videos = defaultdict(list)
+    for video in videos_to_delete:
+        users_videos[video['original_user_id']].append(video['id'])
+
+    await callback.message.edit_text(
+        f"⏳ <b>Удаление видео...</b>\n\n"
+        f"Удаляется {len(videos_to_delete)} видео...",
+        parse_mode="HTML"
+    )
+
+    # Удаляем видео по одному (с конца к началу, чтобы не сбить нумерацию)
+    deleted_count = 0
+    try:
+        current_bot = get_runtime_bot()
+        if current_bot is None:
+            raise RuntimeError("Bot instance is not initialized")
+
+        # Сортируем по убыванию ID
+        videos_to_delete_sorted = sorted(videos_to_delete, key=lambda v: v['id'], reverse=True)
+
+        for video in videos_to_delete_sorted:
+            try:
+                # Удаляем сообщение с видео из чата админа
+                await current_bot.delete_message(
+                    chat_id=video['chat_id'],
+                    message_id=video['message_id']
+                )
+            except Exception as e:
+                logger.warning(f"Не удалось удалить сообщение видео #{video['id']}: {e}")
+
+            # Удаляем из базы
+            if storage.delete_video(video['id']):
+                deleted_count += 1
+
+    except Exception as e:
+        logger.error(f"Ошибка при массовом удалении видео: {e}")
+
+    # Отправляем уведомления пользователям (одно сообщение на пользователя)
+    notified_count = 0
+    for user_id, video_ids in users_videos.items():
+        try:
+            current_bot = get_runtime_bot()
+            if current_bot is None:
+                raise RuntimeError("Bot instance is not initialized")
+
+            count = len(video_ids)
+            await current_bot.send_message(
+                user_id,
+                f"❌ <b>Ваши видео отклонены</b>\n\n"
+                f"Удалено видео: <b>{count}</b> шт.\n\n"
+                f"Видео не прошли модерацию.\n\n"
+                f"Пожалуйста, отправляйте только качественные и уместные видео.",
+                parse_mode="HTML"
+            )
+            notified_count += 1
+        except Exception as e:
+            logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+
+    await callback.message.edit_text(
+        f"✅ <b>Массовое удаление завершено</b>\n\n"
+        f"🗑 Удалено видео: <b>{deleted_count}</b>\n"
+        f"👥 Уведомлено пользователей: <b>{notified_count}</b> из {len(users_videos)}\n\n"
+        f"Оставшиеся видео перенумерованы.\n"
+        f"Прогресс пользователей скорректирован.",
+        parse_mode="HTML"
+    )
+
+    await callback.answer("✅ Видео удалены")
+    logger.info(f"Администратор удалил {deleted_count} видео (диапазон {start_id}-{end_id})")
+
+
+@admin_router.callback_query(F.data == "cancel_delrange")
+async def cancel_delrange(callback: CallbackQuery, admin_id: int):
+    """Отмена массового удаления видео"""
+    if not is_admin(callback.from_user.id, admin_id):
+        await callback.answer("❌ Доступно только администратору", show_alert=True)
+        return
+
+    await callback.message.edit_text("❌ <b>Удаление отменено</b>", parse_mode="HTML")
+    await callback.answer("Отменено")
