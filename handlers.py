@@ -678,17 +678,32 @@ async def _process_user_media_batch(messages: list[Message], admin_id: int):
             continue
 
     if not video_ids:
-        if duplicate_count > 0 and rejected_short_count == 0:
+        if rejected_short_count > 0 and duplicate_count == 0:
+            await first_message.answer(
+                f"❌ <b>Видео отклонено</b>\n\n"
+                f"Минимальная длительность — <b>10 секунд</b>.",
+                parse_mode="HTML",
+                reply_markup=get_main_keyboard()
+            )
+        elif duplicate_count > 0 and rejected_short_count == 0:
             await first_message.answer(
                 f"❌ <b>Видео отклонено</b>\n\n"
                 f"Такое видео уже есть в базе.",
                 parse_mode="HTML",
                 reply_markup=get_main_keyboard()
             )
+        elif rejected_short_count > 0 and duplicate_count > 0:
+            await first_message.answer(
+                f"❌ <b>Видео отклонены</b>\n\n"
+                f"⚠️ Коротких видео (< 10 сек): <b>{rejected_short_count}</b>\n"
+                f"🔁 Дубликатов: <b>{duplicate_count}</b>",
+                parse_mode="HTML",
+                reply_markup=get_main_keyboard()
+            )
         else:
             await first_message.answer(
-                f"❌ <b>Видео отклонено</b>\n\n"
-                f"Минимальная длительность — <b>10 секунд</b>.",
+                f"❌ <b>Ошибка при обработке видео</b>\n\n"
+                f"Попробуйте позже или обратитесь к администратору.",
                 parse_mode="HTML",
                 reply_markup=get_main_keyboard()
             )
