@@ -654,27 +654,44 @@ async def _process_user_media_batch(messages: list[Message], admin_id: int):
                     parse_mode="HTML"
                 )
 
+            logger.info(f"Видео #{temp_video_id} от {user_id} успешно переслано админу")
+
             # Обновляем запись в базе с правильным message_id и chat_id админа
-            videos = storage.load_videos()
-            for v in videos:
-                if v['id'] == temp_video_id:
-                    v['message_id'] = forwarded.message_id
-                    v['chat_id'] = admin_id
-                    break
-            storage.save_videos(videos)
+            try:
+                videos = storage.load_videos()
+                for v in videos:
+                    if v['id'] == temp_video_id:
+                        v['message_id'] = forwarded.message_id
+                        v['chat_id'] = admin_id
+                        break
+                storage.save_videos(videos)
+                logger.info(f"Видео #{temp_video_id} обновлено в базе данных")
+            except Exception as db_error:
+                logger.error(f"Ошибка при обновлении базы данных для видео #{temp_video_id}: {db_error}")
+                # Даже если не удалось обновить базу, видео уже у админа, поэтому продолжаем
 
             video_ids.append(temp_video_id)
 
-            progress = storage.load_user_progress(user_id)
-            progress['limit'] += 1
-            storage.save_user_progress(progress)
+            # Начисляем бонус пользователю
+            try:
+                progress = storage.load_user_progress(user_id)
+                progress['limit'] += 1
+                storage.save_user_progress(progress)
+                logger.info(f"Бонус +1 начислен пользователю {user_id}, новый лимит: {progress['limit']}")
+            except Exception as bonus_error:
+                logger.error(f"Ошибка при начислении бонуса пользователю {user_id}: {bonus_error}")
+                # Продолжаем, так как видео уже добавлено
 
             # Задержка для гарантии строгого порядка доставки сообщений в Telegram
             await asyncio.sleep(0.3)
         except Exception as e:
             logger.error(f"Ошибка при пересылке видео #{temp_video_id} от {user_id}: {e}")
             # Если не удалось переслать видео - удаляем его из базы
-            storage.delete_video(temp_video_id)
+            try:
+                storage.delete_video(temp_video_id)
+                logger.info(f"Видео #{temp_video_id} удалено из базы после ошибки пересылки")
+            except Exception as del_error:
+                logger.error(f"Ошибка при удалении видео #{temp_video_id} из базы: {del_error}")
             continue
 
     if not video_ids:
