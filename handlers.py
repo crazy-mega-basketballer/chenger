@@ -333,43 +333,28 @@ async def get_next_video(event, admin_id: int):
         if current_bot is None:
             raise RuntimeError("Bot instance is not initialized")
 
-        # Получаем оригинальное сообщение для извлечения file_id
-        original_message = await current_bot.forward_message(
-            chat_id=admin_id,  # Временно пересылаем админу (самому себе)
+        # Используем простой подход: copy_message без caption вообще не поддерживается корректно
+        # Поэтому используем комбинацию: копируем с caption, затем редактируем caption на пустую
+
+        # Копируем видео пользователю
+        copied_message = await current_bot.copy_message(
+            chat_id=user_id,
             from_chat_id=next_video['chat_id'],
-            message_id=next_video['message_id']
+            message_id=next_video['message_id'],
+            protect_content=True
         )
 
-        # Удаляем временное пересланное сообщение
-        await current_bot.delete_message(chat_id=admin_id, message_id=original_message.message_id)
-
-        # Определяем тип медиа и получаем file_id
-        file_id = None
-        media_type = None
-
-        if original_message.video:
-            file_id = original_message.video.file_id
-            media_type = "video"
-        elif original_message.video_note:
-            file_id = original_message.video_note.file_id
-            media_type = "video_note"
-
-        if not file_id:
-            raise RuntimeError("Не удалось получить file_id видео")
-
-        # Отправляем видео пользователю БЕЗ подписи
-        if media_type == "video":
-            await current_bot.send_video(
+        # Пытаемся удалить caption у скопированного видео
+        # Для обычных video это работает, для video_note caption не поддерживается
+        try:
+            await current_bot.edit_message_caption(
                 chat_id=user_id,
-                video=file_id,
-                protect_content=True
+                message_id=copied_message.message_id,
+                caption=""
             )
-        elif media_type == "video_note":
-            await current_bot.send_video_note(
-                chat_id=user_id,
-                video_note=file_id,
-                protect_content=True
-            )
+        except Exception as edit_error:
+            # Если не удалось отредактировать (например, video_note), ничего страшного
+            logger.debug(f"Не удалось удалить caption (возможно video_note): {edit_error}")
 
         # Обновляем прогресс ТОЛЬКО после успешной отправки
         progress['last_video_id'] = next_video['id']
