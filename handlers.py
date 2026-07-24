@@ -331,15 +331,43 @@ async def get_next_video(event, admin_id: int):
         if current_bot is None:
             raise RuntimeError("Bot instance is not initialized")
 
-        # Получаем информацию о видео из базы
-        # Используем copy_message БЕЗ подписи и с защитой контента
-        await current_bot.copy_message(
-            chat_id=user_id,
+        # Получаем оригинальное сообщение для извлечения file_id
+        original_message = await current_bot.forward_message(
+            chat_id=admin_id,  # Временно пересылаем админу (самому себе)
             from_chat_id=next_video['chat_id'],
-            message_id=next_video['message_id'],
-            protect_content=True,  # Запрет пересылки и сохранения
-            caption=""  # Удаляем любую подпись
+            message_id=next_video['message_id']
         )
+
+        # Удаляем временное пересланное сообщение
+        await current_bot.delete_message(chat_id=admin_id, message_id=original_message.message_id)
+
+        # Определяем тип медиа и получаем file_id
+        file_id = None
+        media_type = None
+
+        if original_message.video:
+            file_id = original_message.video.file_id
+            media_type = "video"
+        elif original_message.video_note:
+            file_id = original_message.video_note.file_id
+            media_type = "video_note"
+
+        if not file_id:
+            raise RuntimeError("Не удалось получить file_id видео")
+
+        # Отправляем видео пользователю БЕЗ подписи
+        if media_type == "video":
+            await current_bot.send_video(
+                chat_id=user_id,
+                video=file_id,
+                protect_content=True
+            )
+        elif media_type == "video_note":
+            await current_bot.send_video_note(
+                chat_id=user_id,
+                video_note=file_id,
+                protect_content=True
+            )
 
         # Обновляем прогресс ТОЛЬКО после успешной отправки
         progress['last_video_id'] = next_video['id']
@@ -347,7 +375,6 @@ async def get_next_video(event, admin_id: int):
 
         remaining = max(0, limit - next_video['id'])
         await message.answer(
-            f"📹 <b>Видео #{next_video['id']}</b>\n\n"
             f"Осталось видео: <b>{remaining}</b>",
             parse_mode="HTML",
             reply_markup=get_main_keyboard()
