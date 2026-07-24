@@ -583,8 +583,8 @@ async def cmd_delvideo(message: Message, admin_id: int):
 
 
 @admin_router.message(F.reply_to_message)
-async def delete_video_by_reply(message: Message, admin_id: int):
-    """Удаляет видео при ответе администратора на сообщение с видео"""
+async def handle_reply_to_video(message: Message, admin_id: int):
+    """Обрабатывает ответы администратора на видео: /info для информации, любой другой текст для удаления"""
     if not is_admin(message.from_user.id, admin_id):
         return
 
@@ -595,14 +595,14 @@ async def delete_video_by_reply(message: Message, admin_id: int):
 
     # Ищем видео по message_id и chat_id
     videos = storage.load_videos()
-    video_to_delete = None
+    video_info = None
 
     for video in videos:
         if video['message_id'] == replied_message.message_id and video['chat_id'] == replied_message.chat.id:
-            video_to_delete = video
+            video_info = video
             break
 
-    if not video_to_delete:
+    if not video_info:
         await message.answer(
             "❌ <b>Видео не найдено в базе</b>\n\n"
             "Возможно, оно уже было удалено.",
@@ -610,9 +610,62 @@ async def delete_video_by_reply(message: Message, admin_id: int):
         )
         return
 
-    # Удаляем видео из базы
-    video_id = video_to_delete['id']
-    original_user_id = video_to_delete['original_user_id']
+    # Проверяем, это команда /info или обычный текст
+    if message.text and message.text.strip().lower() == "/info":
+        # Показываем информацию о видео
+        from datetime import datetime
+
+        # Получаем информацию о пользователе
+        user_progress = storage.load_user_progress(video_info['original_user_id'], create_if_missing=False)
+
+        # Форматируем дату добавления
+        video_date = datetime.fromtimestamp(video_info['timestamp']).strftime("%d.%m.%Y %H:%M:%S")
+
+        # Подсчитываем сколько видео от этого пользователя
+        user_videos_count = len([v for v in videos if v['original_user_id'] == video_info['original_user_id']])
+
+        info_text = (
+            f"ℹ️ <b>Информация о видео</b>\n\n"
+            f"🆔 <b>ID видео:</b> <code>{video_info['id']}</code>\n"
+            f"📅 <b>Дата добавления:</b> {video_date}\n\n"
+            f"👤 <b>Отправитель:</b> <code>{video_info['original_user_id']}</code>\n"
+            f"📹 <b>Всего видео от пользователя:</b> {user_videos_count}\n"
+        )
+
+        if user_progress:
+            info_text += (
+                f"\n<b>📊 Статистика пользователя:</b>\n"
+                f"▪️ Просмотрено видео: <b>{user_progress['last_video_id']}</b>\n"
+                f"▪️ Лимит: <b>{user_progress['limit']}</b>\n"
+                f"▪️ Доступно: <b>{max(0, user_progress['limit'] - user_progress['last_video_id'])}</b>\n"
+                f"▪️ Рефералов: <b>{user_progress['referrals_count']}</b>\n"
+            )
+
+            # Проверяем бан
+            ban_timestamp = storage.check_ban(video_info['original_user_id'])
+            if ban_timestamp:
+                ban_date = datetime.fromtimestamp(ban_timestamp).strftime("%d.%m.%Y %H:%M")
+                info_text += f"▪️ Статус: 🚫 <b>Забанен до {ban_date}</b>\n"
+            else:
+                info_text += f"▪️ Статус: ✅ <b>Активен</b>\n"
+        else:
+            info_text += "\n<i>Пользователь не найден в базе</i>\n"
+
+        info_text += (
+            f"\n💡 <b>Действия:</b>\n"
+            f"▪️ Ответьте любым текстом для удаления\n"
+            f"▪️ /user {video_info['original_user_id']} — полная статистика\n"
+            f"▪️ /deluservideos {video_info['original_user_id']} — удалить все видео\n"
+            f"▪️ /ban {video_info['original_user_id']} — забанить пользователя"
+        )
+
+        await message.answer(info_text, parse_mode="HTML")
+        logger.info(f"Администратор запросил информацию о видео #{video_info['id']}")
+        return
+
+    # Если это НЕ команда /info, то удаляем видео (старая логика)
+    video_id = video_info['id']
+    original_user_id = video_info['original_user_id']
     success = storage.delete_video(video_id)
 
     if success:
