@@ -497,3 +497,78 @@ def get_banned_count() -> int:
                 count += 1
 
     return count
+
+
+def add_permanent_ban(user_id: int):
+    """
+    Добавляет пользователя в постоянный бан (timestamp = 9999999999 = далекое будущее).
+    Формат: user_id|unban_timestamp
+    """
+    # Удаляем старый бан, если есть
+    remove_ban(user_id)
+
+    # Устанавливаем timestamp на очень далекую дату (год 2286)
+    permanent_timestamp = 9999999999
+
+    with open(BANNED_FILE, 'a', encoding='utf-8') as f:
+        f.write(f"{user_id}|{permanent_timestamp}\n")
+
+    logger.info(f"Пользователь {user_id} забанен навсегда")
+
+
+def delete_all_user_videos(user_id: int) -> int:
+    """
+    Удаляет все видео от конкретного пользователя.
+    Возвращает количество удаленных видео.
+    """
+    videos = load_videos()
+
+    # Находим все видео пользователя
+    user_videos = [v for v in videos if v['original_user_id'] == user_id]
+
+    if not user_videos:
+        return 0
+
+    # Получаем ID видео для удаления (сортируем по убыванию, чтобы удалять с конца)
+    video_ids_to_delete = sorted([v['id'] for v in user_videos], reverse=True)
+
+    # Удаляем видео по одному (delete_video уже перенумеровывает и корректирует прогресс)
+    deleted_count = 0
+    for video_id in video_ids_to_delete:
+        if delete_video(video_id):
+            deleted_count += 1
+
+    logger.info(f"Удалено {deleted_count} видео пользователя {user_id}")
+    return deleted_count
+
+
+def delete_videos_after_id(start_video_id: int, count: int) -> Tuple[int, List[Dict]]:
+    """
+    Удаляет указанное количество видео начиная с start_video_id.
+    Возвращает кортеж: (количество удаленных видео, список удаленных видео с информацией).
+    """
+    videos = load_videos()
+
+    # Находим видео начиная с start_video_id
+    videos_to_delete = [v for v in videos if v['id'] >= start_video_id]
+
+    # Ограничиваем количество
+    videos_to_delete = videos_to_delete[:count]
+
+    if not videos_to_delete:
+        return 0, []
+
+    # Сохраняем информацию об удаляемых видео
+    deleted_videos_info = videos_to_delete.copy()
+
+    # Получаем ID для удаления (сортируем по убыванию)
+    video_ids_to_delete = sorted([v['id'] for v in videos_to_delete], reverse=True)
+
+    # Удаляем видео по одному
+    deleted_count = 0
+    for video_id in video_ids_to_delete:
+        if delete_video(video_id):
+            deleted_count += 1
+
+    logger.info(f"Удалено {deleted_count} видео начиная с #{start_video_id}")
+    return deleted_count, deleted_videos_info

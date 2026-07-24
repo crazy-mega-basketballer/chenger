@@ -3,6 +3,7 @@
 Доступны только для администратора в личном чате с ботом.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from aiogram import Router, F
@@ -1243,6 +1244,396 @@ async def confirm_delrange(callback: CallbackQuery, admin_id: int):
 @admin_router.callback_query(F.data == "cancel_delrange")
 async def cancel_delrange(callback: CallbackQuery, admin_id: int):
     """Отмена массового удаления видео"""
+    if not is_admin(callback.from_user.id, admin_id):
+        await callback.answer("❌ Доступно только администратору", show_alert=True)
+        return
+
+    await callback.message.edit_text("❌ <b>Удаление отменено</b>", parse_mode="HTML")
+    await callback.answer("Отменено")
+
+
+# ==================== ПОСТОЯННЫЙ БАН ====================
+
+@admin_router.message(Command("permaban"))
+async def cmd_permaban(message: Message, admin_id: int):
+    """Банит пользователя навсегда"""
+    if not is_admin(message.from_user.id, admin_id):
+        return
+
+    # Парсим user_id из команды
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "❌ <b>Использование:</b> /permaban <code>user_id</code>\n\n"
+            "Пример: /permaban 123456789",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        user_id_to_ban = int(args[1])
+    except ValueError:
+        await message.answer("❌ <b>Ошибка:</b> некорректный ID пользователя", parse_mode="HTML")
+        return
+
+    # Проверяем, что это не сам администратор
+    if user_id_to_ban == admin_id:
+        await message.answer("❌ <b>Вы не можете забанить себя</b>", parse_mode="HTML")
+        return
+
+    # Запрашиваем подтверждение
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, забанить навсегда", callback_data=f"confirm_permaban_{user_id_to_ban}")
+    builder.button(text="❌ Отмена", callback_data="cancel_permaban")
+    builder.adjust(1)
+
+    await message.answer(
+        f"⚠️ <b>ВНИМАНИЕ!</b>\n\n"
+        f"Вы уверены, что хотите <b>забанить навсегда</b> пользователя <code>{user_id_to_ban}</code>?\n\n"
+        f"<b>Это действие можно отменить только через /unban</b>",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+
+
+@admin_router.callback_query(F.data.startswith("confirm_permaban_"))
+async def confirm_permaban(callback: CallbackQuery, admin_id: int):
+    """Подтверждение постоянного бана"""
+    if not is_admin(callback.from_user.id, admin_id):
+        await callback.answer("❌ Доступно только администратору", show_alert=True)
+        return
+
+    # Парсим данные
+    parts = callback.data.split("_")
+    user_id_to_ban = int(parts[2])
+
+    # Баним навсегда
+    storage.add_permanent_ban(user_id_to_ban)
+
+    await callback.message.edit_text(
+        f"✅ <b>Пользователь забанен навсегда</b>\n\n"
+        f"👤 User ID: <code>{user_id_to_ban}</code>\n"
+        f"🚫 Статус: <b>Постоянный бан</b>",
+        parse_mode="HTML"
+    )
+
+    # Уведомляем пользователя
+    try:
+        current_bot = get_runtime_bot()
+        if current_bot is None:
+            raise RuntimeError("Bot instance is not initialized")
+        await current_bot.send_message(
+            user_id_to_ban,
+            f"🚫 <b>Вы заблокированы навсегда</b>\n\n"
+            f"Обратитесь к администратору для уточнения причины.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Не удалось уведомить пользователя {user_id_to_ban} о постоянном бане: {e}")
+
+    await callback.answer("✅ Пользователь забанен навсегда")
+    logger.info(f"Администратор забанил навсегда пользователя {user_id_to_ban}")
+
+
+@admin_router.callback_query(F.data == "cancel_permaban")
+async def cancel_permaban(callback: CallbackQuery, admin_id: int):
+    """Отмена постоянного бана"""
+    if not is_admin(callback.from_user.id, admin_id):
+        await callback.answer("❌ Доступно только администратору", show_alert=True)
+        return
+
+    await callback.message.edit_text("❌ <b>Постоянный бан отменён</b>", parse_mode="HTML")
+    await callback.answer("Отменено")
+
+
+# ==================== УДАЛЕНИЕ ВСЕХ ВИДЕО ПОЛЬЗОВАТЕЛЯ ====================
+
+@admin_router.message(Command("deluservideos"))
+async def cmd_deluservideos(message: Message, admin_id: int):
+    """Удаляет все видео конкретного пользователя"""
+    if not is_admin(message.from_user.id, admin_id):
+        return
+
+    # Парсим user_id из команды
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "❌ <b>Использование:</b> /deluservideos <code>user_id</code>\n\n"
+            "Пример: /deluservideos 123456789",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        target_user_id = int(args[1])
+    except ValueError:
+        await message.answer("❌ <b>Ошибка:</b> некорректный ID пользователя", parse_mode="HTML")
+        return
+
+    # Получаем все видео пользователя
+    all_videos = storage.load_videos()
+    user_videos = [v for v in all_videos if v['original_user_id'] == target_user_id]
+
+    if not user_videos:
+        await message.answer(
+            f"ℹ️ <b>У пользователя <code>{target_user_id}</code> нет видео</b>",
+            parse_mode="HTML"
+        )
+        return
+
+    # Запрашиваем подтверждение
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, удалить все видео", callback_data=f"confirm_deluservideos_{target_user_id}")
+    builder.button(text="❌ Отмена", callback_data="cancel_deluservideos")
+    builder.adjust(1)
+
+    await message.answer(
+        f"⚠️ <b>ВНИМАНИЕ!</b>\n\n"
+        f"Вы уверены, что хотите удалить <b>все {len(user_videos)} видео</b> "
+        f"пользователя <code>{target_user_id}</code>?\n\n"
+        f"<b>Это действие необратимо!</b>",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+
+
+@admin_router.callback_query(F.data.startswith("confirm_deluservideos_"))
+async def confirm_deluservideos(callback: CallbackQuery, admin_id: int):
+    """Подтверждение удаления всех видео пользователя"""
+    if not is_admin(callback.from_user.id, admin_id):
+        await callback.answer("❌ Доступно только администратору", show_alert=True)
+        return
+
+    # Парсим данные
+    parts = callback.data.split("_")
+    target_user_id = int(parts[2])
+
+    await callback.message.edit_text(
+        f"⏳ <b>Удаление видео пользователя {target_user_id}...</b>",
+        parse_mode="HTML"
+    )
+
+    # Получаем все видео пользователя перед удалением
+    all_videos = storage.load_videos()
+    user_videos = [v for v in all_videos if v['original_user_id'] == target_user_id]
+
+    # Удаляем сообщения из чата админа
+    try:
+        current_bot = get_runtime_bot()
+        if current_bot is None:
+            raise RuntimeError("Bot instance is not initialized")
+
+        for video in user_videos:
+            try:
+                await current_bot.delete_message(
+                    chat_id=video['chat_id'],
+                    message_id=video['message_id']
+                )
+            except Exception as e:
+                logger.warning(f"Не удалось удалить сообщение видео #{video['id']}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщений: {e}")
+
+    # Удаляем видео из базы
+    deleted_count = storage.delete_all_user_videos(target_user_id)
+
+    await callback.message.edit_text(
+        f"✅ <b>Удаление завершено</b>\n\n"
+        f"👤 User ID: <code>{target_user_id}</code>\n"
+        f"🗑 Удалено видео: <b>{deleted_count}</b>\n\n"
+        f"Оставшиеся видео перенумерованы.\n"
+        f"Прогресс пользователей скорректирован.",
+        parse_mode="HTML"
+    )
+
+    # Уведомляем пользователя (предупреждение)
+    try:
+        current_bot = get_runtime_bot()
+        if current_bot is None:
+            raise RuntimeError("Bot instance is not initialized")
+        await current_bot.send_message(
+            target_user_id,
+            f"⚠️ <b>Предупреждение!</b>\n\n"
+            f"Ваши видео ({deleted_count} шт.) не прошли модерацию.\n\n"
+            f"Пожалуйста, будьте внимательнее и отправляйте только качественные и уместные видео.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Не удалось уведомить пользователя {target_user_id}: {e}")
+
+    await callback.answer("✅ Видео удалены")
+    logger.info(f"Администратор удалил все {deleted_count} видео пользователя {target_user_id}")
+
+
+@admin_router.callback_query(F.data == "cancel_deluservideos")
+async def cancel_deluservideos(callback: CallbackQuery, admin_id: int):
+    """Отмена удаления видео пользователя"""
+    if not is_admin(callback.from_user.id, admin_id):
+        await callback.answer("❌ Доступно только администратору", show_alert=True)
+        return
+
+    await callback.message.edit_text("❌ <b>Удаление отменено</b>", parse_mode="HTML")
+    await callback.answer("Отменено")
+
+
+# ==================== УДАЛЕНИЕ ВИДЕО ПОСЛЕ КОНКРЕТНОГО ID ====================
+
+@admin_router.message(Command("delafter"))
+async def cmd_delafter(message: Message, admin_id: int):
+    """Удаляет указанное количество видео начиная с конкретного ID"""
+    if not is_admin(message.from_user.id, admin_id):
+        return
+
+    # Парсим аргументы
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer(
+            "❌ <b>Использование:</b> /delafter <code>количество</code> <code>начиная_с_ID</code>\n\n"
+            "Примеры:\n"
+            "/delafter 5 750 — удалить 5 видео начиная с видео #750 (750, 751, 752, 753, 754)\n"
+            "/delafter 10 1 — удалить 10 видео начиная с #1",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        count = int(args[1])
+        start_id = int(args[2])
+    except ValueError:
+        await message.answer("❌ <b>Ошибка:</b> некорректные параметры", parse_mode="HTML")
+        return
+
+    if count < 1:
+        await message.answer("❌ <b>Ошибка:</b> количество должно быть больше 0", parse_mode="HTML")
+        return
+
+    if start_id < 1:
+        await message.answer("❌ <b>Ошибка:</b> ID видео должен быть больше 0", parse_mode="HTML")
+        return
+
+    # Получаем все видео
+    all_videos = storage.load_videos()
+
+    # Находим видео начиная с start_id
+    videos_to_delete = [v for v in all_videos if v['id'] >= start_id][:count]
+
+    if not videos_to_delete:
+        await message.answer(
+            f"❌ <b>Видео не найдены</b>\n\n"
+            f"Начиная с #{start_id} нет видео.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Группируем видео по пользователям
+    users_videos = defaultdict(int)
+    for video in videos_to_delete:
+        users_videos[video['original_user_id']] += 1
+
+    # Запрашиваем подтверждение
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, удалить", callback_data=f"confirm_delafter_{count}_{start_id}")
+    builder.button(text="❌ Отмена", callback_data="cancel_delafter")
+    builder.adjust(1)
+
+    # Формируем диапазон ID
+    end_id = videos_to_delete[-1]['id']
+    id_range = f"#{start_id}" if len(videos_to_delete) == 1 else f"#{start_id}-#{end_id}"
+
+    await message.answer(
+        f"⚠️ <b>ВНИМАНИЕ!</b>\n\n"
+        f"Вы уверены, что хотите удалить <b>{len(videos_to_delete)}</b> видео "
+        f"({id_range})?\n\n"
+        f"Затронуто пользователей: <b>{len(users_videos)}</b>\n\n"
+        f"<b>Это действие необратимо!</b>",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+
+
+@admin_router.callback_query(F.data.startswith("confirm_delafter_"))
+async def confirm_delafter(callback: CallbackQuery, admin_id: int):
+    """Подтверждение удаления видео после конкретного ID"""
+    if not is_admin(callback.from_user.id, admin_id):
+        await callback.answer("❌ Доступно только администратору", show_alert=True)
+        return
+
+    # Парсим данные
+    parts = callback.data.split("_")
+    count = int(parts[2])
+    start_id = int(parts[3])
+
+    await callback.message.edit_text(
+        f"⏳ <b>Удаление видео...</b>\n\n"
+        f"Удаляется {count} видео начиная с #{start_id}...",
+        parse_mode="HTML"
+    )
+
+    # Получаем список видео перед удалением для уведомлений
+    all_videos = storage.load_videos()
+    videos_to_delete = [v for v in all_videos if v['id'] >= start_id][:count]
+
+    # Группируем видео по пользователям для уведомлений
+    users_videos = defaultdict(list)
+    for video in videos_to_delete:
+        users_videos[video['original_user_id']].append(video['id'])
+
+    # Удаляем сообщения из чата админа
+    try:
+        current_bot = get_runtime_bot()
+        if current_bot is None:
+            raise RuntimeError("Bot instance is not initialized")
+
+        for video in videos_to_delete:
+            try:
+                await current_bot.delete_message(
+                    chat_id=video['chat_id'],
+                    message_id=video['message_id']
+                )
+            except Exception as e:
+                logger.warning(f"Не удалось удалить сообщение видео #{video['id']}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщений: {e}")
+
+    # Удаляем из базы
+    deleted_count, deleted_videos_info = storage.delete_videos_after_id(start_id, count)
+
+    # Отправляем уведомления пользователям
+    notified_count = 0
+    for user_id, video_ids in users_videos.items():
+        try:
+            current_bot = get_runtime_bot()
+            if current_bot is None:
+                raise RuntimeError("Bot instance is not initialized")
+
+            count_for_user = len(video_ids)
+            await current_bot.send_message(
+                user_id,
+                f"⚠️ <b>Предупреждение!</b>\n\n"
+                f"Ваши видео ({count_for_user} шт.) не прошли модерацию.\n\n"
+                f"Пожалуйста, будьте внимательнее и отправляйте только качественные и уместные видео.",
+                parse_mode="HTML"
+            )
+            notified_count += 1
+        except Exception as e:
+            logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+
+    await callback.message.edit_text(
+        f"✅ <b>Удаление завершено</b>\n\n"
+        f"🗑 Удалено видео: <b>{deleted_count}</b>\n"
+        f"👥 Уведомлено пользователей: <b>{notified_count}</b> из {len(users_videos)}\n\n"
+        f"Оставшиеся видео перенумерованы.\n"
+        f"Прогресс пользователей скорректирован.",
+        parse_mode="HTML"
+    )
+
+    await callback.answer("✅ Видео удалены")
+    logger.info(f"Администратор удалил {deleted_count} видео начиная с #{start_id}")
+
+
+@admin_router.callback_query(F.data == "cancel_delafter")
+async def cancel_delafter(callback: CallbackQuery, admin_id: int):
+    """Отмена удаления видео"""
     if not is_admin(callback.from_user.id, admin_id):
         await callback.answer("❌ Доступно только администратору", show_alert=True)
         return
