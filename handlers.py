@@ -332,12 +332,13 @@ async def get_next_video(event, admin_id: int):
             raise RuntimeError("Bot instance is not initialized")
 
         # Получаем информацию о видео из базы
-        # Используем copy_message с параметром protect_content для запрета пересылки и сохранения
+        # Используем copy_message БЕЗ подписи и с защитой контента
         await current_bot.copy_message(
             chat_id=user_id,
             from_chat_id=next_video['chat_id'],
             message_id=next_video['message_id'],
-            protect_content=True  # Запрет пересылки и сохранения
+            protect_content=True,  # Запрет пересылки и сохранения
+            caption=""  # Удаляем любую подпись
         )
 
         # Обновляем прогресс ТОЛЬКО после успешной отправки
@@ -346,7 +347,7 @@ async def get_next_video(event, admin_id: int):
 
         remaining = max(0, limit - next_video['id'])
         await message.answer(
-            f"✅ <b>Видео отправлено</b>\n\n"
+            f"📹 <b>Видео #{next_video['id']}</b>\n\n"
             f"Осталось видео: <b>{remaining}</b>",
             parse_mode="HTML",
             reply_markup=get_main_keyboard()
