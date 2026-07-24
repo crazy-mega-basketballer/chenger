@@ -810,7 +810,7 @@ async def cancel_clear(callback: CallbackQuery, admin_id: int):
 
 @admin_router.message(Command("setlimit"))
 async def cmd_setlimit(message: Message, admin_id: int):
-    """Устанавливает лимит пользователя вручную"""
+    """Устанавливает количество доступных для просмотра видео"""
     if not is_admin(message.from_user.id, admin_id):
         return
 
@@ -818,30 +818,36 @@ async def cmd_setlimit(message: Message, admin_id: int):
     args = message.text.split()
     if len(args) < 3:
         await message.answer(
-            "❌ <b>Использование:</b> /setlimit <code>user_id</code> <code>new_limit</code>\n\n"
-            "Пример: /setlimit 123456789 50",
+            "❌ <b>Использование:</b> /setlimit <code>user_id</code> <code>количество_видео</code>\n\n"
+            "Пример: /setlimit 123456789 15\n"
+            "Установит пользователю 15 доступных для просмотра видео",
             parse_mode="HTML"
         )
         return
 
     try:
         user_id = int(args[1])
-        new_limit = int(args[2])
+        available_count = int(args[2])
     except ValueError:
         await message.answer("❌ <b>Ошибка:</b> некорректные параметры", parse_mode="HTML")
         return
 
-    if new_limit < 0:
-        await message.answer("❌ <b>Ошибка:</b> лимит не может быть отрицательным", parse_mode="HTML")
+    if available_count < 0:
+        await message.answer("❌ <b>Ошибка:</b> количество видео не может быть отрицательным", parse_mode="HTML")
         return
 
-    # Устанавливаем новый лимит
-    storage.update_user_limit(user_id, new_limit)
+    # Получаем текущий прогресс для информации
+    progress = storage.load_user_progress(user_id)
+
+    # Устанавливаем доступные видео
+    new_limit = storage.set_available_videos(user_id, available_count)
 
     await message.answer(
-        f"✅ <b>Лимит изменён</b>\n\n"
+        f"✅ <b>Доступные видео изменены</b>\n\n"
         f"👤 User ID: <code>{user_id}</code>\n"
-        f"🎯 Новый лимит: <b>{new_limit}</b> видео",
+        f"📊 Просмотрено: <b>{progress['last_video_id']}</b> видео\n"
+        f"🎯 Доступно для просмотра: <b>{available_count}</b> видео\n"
+        f"📈 Новый лимит: <b>{new_limit}</b>",
         parse_mode="HTML"
     )
 
@@ -853,13 +859,13 @@ async def cmd_setlimit(message: Message, admin_id: int):
         await current_bot.send_message(
             user_id,
             f"🎯 <b>Ваш лимит изменён администратором</b>\n\n"
-            f"Новый лимит: <b>{new_limit}</b> видео",
+            f"Доступно для просмотра: <b>{available_count}</b> видео",
             parse_mode="HTML"
         )
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя {user_id} об изменении лимита: {e}")
 
-    logger.info(f"Администратор изменил лимит пользователя {user_id} на {new_limit}")
+    logger.info(f"Администратор установил {available_count} доступных видео для пользователя {user_id}")
 
 
 # ==================== РАССЫЛКА СООБЩЕНИЙ ====================

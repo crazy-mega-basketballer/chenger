@@ -376,6 +376,20 @@ def update_user_limit(user_id: int, new_limit: int):
     logger.info(f"Лимит пользователя {user_id} изменён на {new_limit}")
 
 
+def set_available_videos(user_id: int, available_count: int):
+    """
+    Устанавливает количество доступных для просмотра видео.
+    available_count - сколько видео будет доступно пользователю.
+    limit = last_video_id + available_count
+    """
+    progress = load_user_progress(user_id)
+    new_limit = progress['last_video_id'] + max(0, available_count)
+    progress['limit'] = new_limit
+    save_user_progress(progress)
+    logger.info(f"Пользователю {user_id} установлено {available_count} доступных видео (лимит: {new_limit})")
+    return new_limit
+
+
 def add_referral(referrer_id: int, new_user_id: int) -> bool:
     """
     Добавляет реферала: увеличивает лимит реферера на 15 и счётчик рефералов на 1.
